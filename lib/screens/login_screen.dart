@@ -5,6 +5,7 @@ import '../services/storage_service.dart';
 import 'debug_screen.dart';
 import 'certificate_helper_screen.dart';
 import '../secret.dart';
+import '../widgets/network_scanner_widget.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -22,7 +23,7 @@ class _LoginScreenState extends State<LoginScreen> {
   
   bool _isLoading = false;
   bool _rememberCredentials = false;
-  bool _obscurePassword = true;
+  // Always use HTTPS
   bool _useHttps = true;
 
   @override
@@ -32,7 +33,19 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _loadCredentials() async {
-    // First try to load from secret.dart if available
+    // First try to load from presetup info
+    final hasPresetup = await StorageService.hasPresetupInfo();
+    if (hasPresetup) {
+      final presetupInfo = await StorageService.getPresetupInfo();
+      _usernameController.text = presetupInfo['username'] ?? '';
+      _passwordController.text = presetupInfo['password'] ?? '';
+      _ipController.text = presetupInfo['ip'] ?? '';
+      _portController.text = presetupInfo['port'] ?? '443';
+      print('Loaded credentials from presetup info');
+      return;
+    }
+    
+    // If no presetup info, try to load from secret.dart
     try {
       _usernameController.text = UnifiCredentials.username;
       _passwordController.text = UnifiCredentials.password;
@@ -95,6 +108,12 @@ class _LoginScreenState extends State<LoginScreen> {
     return '$protocol://$ip:$port';
   }
 
+  void _updateIpField(String ip) {
+    setState(() {
+      _ipController.text = ip;
+    });
+  }
+
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -133,70 +152,34 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       } else {
         if (mounted) {
-          // Show detailed error message with certificate solution
-          showDialog(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Row(
-                children: [
-                  Icon(Icons.security, color: Colors.orange),
-                  SizedBox(width: 8),
-                  Expanded(child: Text('Certificate Issue')),
-                ],
-              ),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Your UniFi controller uses a self-signed certificate that browsers block by default.',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text('🔧 Solutions:'),
-                    const SizedBox(height: 8),
-                    const Text('• Try HTTP instead of HTTPS'),
-                    const Text('• Use port 80 or 8080'),
-                    const Text('• Or accept certificate in browser'),
-                    const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.blue.shade50,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        'Current URL: ${_buildControllerUrl()}',
-                        style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+          // Show appropriate error message based on the response
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Login failed. Please check your credentials and try again.'),
+              backgroundColor: Colors.red,
+              action: SnackBarAction(
+                label: 'Certificate Help',
+                textColor: Colors.white,
+                onPressed: () {
+                  final url = _buildControllerUrl();
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => CertificateHelperScreen(
+                        controllerUrl: url,
+                        onCertificateAccepted: () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Try logging in now!'),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                        },
                       ),
                     ),
-                  ],
-                ),
+                  );
+                },
               ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    // Switch to HTTP
-                    setState(() {
-                      _useHttps = false;
-                      _portController.text = '80';
-                    });
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Switched to HTTP. Try logging in again.'),
-                        backgroundColor: Colors.blue,
-                      ),
-                    );
-                  },
-                  child: const Text('Try HTTP'),
-                ),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Got it'),
-                ),
-              ],
             ),
           );
         }
@@ -223,20 +206,17 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Unifi Login'),
+        title: const Text('Unifi WPA'),
         centerTitle: true,
+        automaticallyImplyLeading: false, // Prevent back arrow from appearing
         actions: [
+          // Admin credentials shortcut
           IconButton(
-            icon: const Icon(Icons.bug_report),
+            icon: const Icon(Icons.admin_panel_settings),
+            tooltip: 'Admin Settings',
             onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const DebugScreen(),
-                ),
-              );
+              Navigator.pushNamed(context, '/app-login');
             },
-            tooltip: 'Network Debug',
           ),
         ],
       ),
@@ -254,86 +234,32 @@ class _LoginScreenState extends State<LoginScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SizedBox(height: 10),
-                const Icon(
-                  Icons.wifi_lock,
-                  size: 50,
-                  color: Colors.blue,
+                const SizedBox(height: 20),
+                // App logo
+                Image.asset(
+                  'assets/images/logo.png',
+                  height: 80,
+                  width: 80,
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
                 const Text(
-                  'Unifi Password Changer',
+                  'Unifi WPA',
                   style: TextStyle(
-                    fontSize: 18,
+                    fontSize: 24,
                     fontWeight: FontWeight.bold,
                   ),
                   textAlign: TextAlign.center,
                 ),
-                const SizedBox(height: 16),
-                
-                // Compact info card for mobile
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Row(
-                          children: [
-                            Icon(Icons.info, color: Colors.blue, size: 18),
-                            SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'Local UniFi Controller Access',
-                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Row(
-                          children: [
-                            const Expanded(
-                              child: Text(
-                                'For certificate issues:',
-                                style: TextStyle(fontSize: 11),
-                              ),
-                            ),
-                            TextButton.icon(
-                              onPressed: () {
-                                final url = _buildControllerUrl();
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => CertificateHelperScreen(
-                                      controllerUrl: url,
-                                      onCertificateAccepted: () {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          const SnackBar(
-                                            content: Text('Try logging in now!'),
-                                            backgroundColor: Colors.green,
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  ),
-                                );
-                              },
-                              icon: const Icon(Icons.help, size: 14),
-                              label: const Text('Help', style: TextStyle(fontSize: 11)),
-                              style: TextButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                minimumSize: const Size(0, 30),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
+                const SizedBox(height: 6),
+                const Text(
+                  'WiFi Password Manager',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey,
                   ),
+                  textAlign: TextAlign.center,
                 ),
-                
-                const SizedBox(height: 16),
+                const SizedBox(height: 30),
                 
                 // Username field
                 TextFormField(
@@ -356,24 +282,16 @@ class _LoginScreenState extends State<LoginScreen> {
                 
                 const SizedBox(height: 16),
                 
-                // Password field
+                // Password field (always obscured)
                 TextFormField(
                   controller: _passwordController,
-                  decoration: InputDecoration(
+                  decoration: const InputDecoration(
                     labelText: 'Password',
-                    prefixIcon: const Icon(Icons.lock),
-                    suffixIcon: IconButton(
-                      icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
-                      onPressed: () {
-                        setState(() {
-                          _obscurePassword = !_obscurePassword;
-                        });
-                      },
-                    ),
-                    border: const OutlineInputBorder(),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                    prefixIcon: Icon(Icons.lock),
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                   ),
-                  obscureText: _obscurePassword,
+                  obscureText: true, // Always obscured
                   textInputAction: TextInputAction.next,
                   validator: (value) {
                     if (value == null || value.isEmpty) {
@@ -385,19 +303,23 @@ class _LoginScreenState extends State<LoginScreen> {
                 
                 const SizedBox(height: 16),
                 
-                // IP and Port fields
+                // IP and Port fields with scan button
                 Row(
                   children: [
                     Expanded(
                       flex: 3,
                       child: TextFormField(
                         controller: _ipController,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'Controller IP',
-                          prefixIcon: Icon(Icons.router),
-                          border: OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.router),
+                          suffixIcon: NetworkScannerWidget(
+                            onIpSelected: _updateIpField,
+                            compact: true,
+                          ),
+                          border: const OutlineInputBorder(),
                           hintText: '192.168.1.100',
-                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                         ),
                         keyboardType: const TextInputType.numberWithOptions(decimal: true),
                         textInputAction: TextInputAction.next,
@@ -443,49 +365,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 
                 const SizedBox(height: 16),
-                
-                // Protocol selection
-                Row(
-                  children: [
-                    const Icon(Icons.security, color: Colors.grey, size: 20),
-                    const SizedBox(width: 8),
-                    const Text('Protocol:', style: TextStyle(fontSize: 14)),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Row(
-                        children: [
-                          ChoiceChip(
-                            label: const Text('HTTPS', style: TextStyle(fontSize: 12)),
-                            selected: _useHttps,
-                            onSelected: (selected) {
-                              setState(() {
-                                _useHttps = true;
-                                if (_portController.text == '80') {
-                                  _portController.text = '443';
-                                }
-                              });
-                            },
-                          ),
-                          const SizedBox(width: 8),
-                          ChoiceChip(
-                            label: const Text('HTTP', style: TextStyle(fontSize: 12)),
-                            selected: !_useHttps,
-                            onSelected: (selected) {
-                              setState(() {
-                                _useHttps = false;
-                                if (_portController.text == '443') {
-                                  _portController.text = '80';
-                                }
-                              });
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                
-                const SizedBox(height: 12),
                 
                 // URL preview
                 Container(
@@ -544,7 +423,36 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
                 
-                const SizedBox(height: 20), // Extra space for keyboard
+                const SizedBox(height: 30), // Extra space for keyboard
+                
+                // Company logo at the bottom
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16.0),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'Developed by IEC',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'www.iec.vu',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.blue,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Image.asset(
+                        'assets/images/ieclogo.png',
+                        height: 40,
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
