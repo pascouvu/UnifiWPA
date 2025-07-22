@@ -9,6 +9,7 @@ import '../models/unifi_models.dart';
 class UnifiService {
   String baseUrl;
   String? _cookies;
+  String? _unifisesCookie;
   String? _csrfToken;
   late http.Client _httpClient;
 
@@ -34,19 +35,17 @@ class UnifiService {
     }
   }
 
-  // Test connectivity to local controller
+  // Test basic connectivity first
   Future<bool> testConnectivity() async {
+    // Check if running on web
+    if (kIsWeb) {
+      print('Running on web - CORS restrictions may apply');
+      print('For full functionality, please use the Android APK on a mobile device');
+      return false; // Skip connectivity test on web due to CORS
+    }
+    
     try {
-      print('Testing connectivity to local controller: $baseUrl');
-      
-      if (kIsWeb) {
-        print('⚠️  Running in browser - certificate issues may prevent access');
-        print('💡 If your controller uses self-signed certificates:');
-        print('   1. Visit $baseUrl in a new browser tab');
-        print('   2. Accept the security warning/certificate');
-        print('   3. Then return to this app and try again');
-      }
-      
+      print('Testing connectivity to: $baseUrl');
       final response = await _httpClient.get(
         Uri.parse(baseUrl),
         headers: {
@@ -58,211 +57,177 @@ class UnifiService {
       return response.statusCode < 500; // Accept any non-server error
     } catch (e) {
       print('Connectivity test failed: $e');
-      
-      if (kIsWeb && e.toString().contains('Failed to fetch')) {
-        print('🔒 Certificate/CORS issue detected in browser');
-        print('📋 Solutions:');
-        print('   • Visit $baseUrl directly and accept certificate');
-        print('   • Use HTTP instead of HTTPS if available');
-        print('   • Add certificate exception in browser');
-      }
-      
       return false;
     }
   }
 
   Future<bool> login(String username, String password) async {
-    print('🏠 Attempting login to local UniFi Controller: $baseUrl');
-    return await loginToLocalController(baseUrl, username, password);
-  }
-
-  // Alternative method for local controller authentication
-  Future<bool> loginToLocalController(String controllerUrl, String username, String password) async {
     try {
-      print('Attempting login to local controller: $controllerUrl');
-      
-      // Step 1: Get login page - try different endpoints
-      final loginEndpoints = [
-        '$controllerUrl/login',
-        '$controllerUrl/manage/account/login',
-        '$controllerUrl/',
-      ];
-      
-      String? loginPageUrl;
-      String? loginPageBody;
-      String? sessionCookies;
-      
-      for (final endpoint in loginEndpoints) {
-        try {
-          print('Trying login page: $endpoint');
-          final loginPageResponse = await _httpClient.get(
-            Uri.parse(endpoint),
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.5',
-            },
-          ).timeout(const Duration(seconds: 15));
-
-          print('Login page response from $endpoint: ${loginPageResponse.statusCode}');
-          
-          if (loginPageResponse.statusCode == 200) {
-            loginPageUrl = endpoint;
-            loginPageBody = loginPageResponse.body;
-            
-            // Extract session cookies
-            if (loginPageResponse.headers['set-cookie'] != null) {
-              sessionCookies = loginPageResponse.headers['set-cookie'];
-              print('Session cookies from login page: $sessionCookies');
-            }
-            
-            print('Successfully accessed login page at: $endpoint');
-            break;
-          }
-        } catch (e) {
-          print('Failed to access $endpoint: $e');
-          continue;
-        }
-      }
-
-      if (loginPageUrl == null || loginPageBody == null) {
-        print('Failed to access any login page');
+      // First test basic connectivity
+      final canConnect = await testConnectivity();
+      if (!canConnect && !kIsWeb) {
+        print('Basic connectivity test failed');
         return false;
       }
 
-      // Step 2: Extract CSRF token from login page
-      String? csrfToken;
-      final csrfPatterns = [
-        RegExp(r'name="csrf_token"[^>]*value="([^"]*)"'),
-        RegExp(r'name="_token"[^>]*value="([^"]*)"'),
-        RegExp(r'"csrf_token":"([^"]*)"'),
-        RegExp(r'csrf[_-]?token["\s]*:["\s]*([^"]*)"'),
+      // Try multiple login endpoints - start with traditional UniFi controller
+      final loginEndpoints = [
+        '$baseUrl/api/login',           // Traditional UniFi controller
+        '$baseUrl/api/auth/login',      // New UniFi Cloud/Network Application
       ];
       
-      for (final pattern in csrfPatterns) {
-        final match = pattern.firstMatch(loginPageBody);
-        if (match != null) {
-          csrfToken = match.group(1);
-          print('CSRF token extracted: $csrfToken');
-          break;
-        }
-      }
-
-      // Step 3: Try different authentication endpoints
-      final authEndpoints = [
-        '$controllerUrl/api/auth/login',
-        '$controllerUrl/api/login',
-        '$controllerUrl/login',
-      ];
-
-      for (final authEndpoint in authEndpoints) {
+      for (final endpoint in loginEndpoints) {
         try {
-          print('Trying authentication endpoint: $authEndpoint');
+          print('Attempting login to: $endpoint');
           
-          // Try both JSON and form-encoded data
-          final attempts = [
-            // Form-encoded (most common for web forms)
-            {
-              'contentType': 'application/x-www-form-urlencoded',
-              'body': [
-                'username=${Uri.encodeComponent(username)}',
-                'password=${Uri.encodeComponent(password)}',
-                'remember=on',
-                if (csrfToken != null) 'csrf_token=${Uri.encodeComponent(csrfToken)}',
-                if (csrfToken != null) '_token=${Uri.encodeComponent(csrfToken)}',
-              ].join('&'),
-            },
-            // JSON format
-            {
-              'contentType': 'application/json',
-              'body': jsonEncode({
-                'username': username,
-                'password': password,
-                'remember': true,
-                if (csrfToken != null) 'csrf_token': csrfToken,
-                if (csrfToken != null) '_token': csrfToken,
-              }),
-            },
-          ];
-
-          for (final attempt in attempts) {
-            print('Trying ${attempt['contentType']} for $authEndpoint');
-            
-            final headers = {
-              'Content-Type': attempt['contentType']!,
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          final loginData = {
+            'username': username,
+            'password': password,
+            'remember': false,
+            'strict': true,
+          };
+          
+          final response = await _httpClient.post(
+            Uri.parse(endpoint),
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36',
               'Accept': 'application/json, text/plain, */*',
-              'Accept-Language': 'en-US,en;q=0.5',
-              'Referer': loginPageUrl,
-              'Origin': controllerUrl,
-            };
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Origin': baseUrl,
+              'Referer': '$baseUrl/login',
+            },
+            body: jsonEncode(loginData),
+          ).timeout(
+            const Duration(seconds: 30),
+            onTimeout: () {
+              throw TimeoutException('Login request timed out', const Duration(seconds: 30));
+            },
+          );
 
-            // Add session cookies if available
-            if (sessionCookies != null) {
-              headers['Cookie'] = sessionCookies;
-            }
-
-            final loginResponse = await _httpClient.post(
-              Uri.parse(authEndpoint),
-              headers: headers,
-              body: attempt['body']!,
-            ).timeout(const Duration(seconds: 30));
-
-            print('Auth response from $authEndpoint (${attempt['contentType']}): ${loginResponse.statusCode}');
-            print('Response headers: ${loginResponse.headers}');
-            print('Response body: ${loginResponse.body}');
-            
-            if (loginResponse.statusCode == 200) {
-              final cookies = loginResponse.headers['set-cookie'];
-              if (cookies != null) {
-                _cookies = cookies;
-                print('✅ Local controller authentication successful');
-                return true;
+          print('Login response status: ${response.statusCode}');
+          print('Login response headers: ${response.headers}');
+          print('Login response body: ${response.body}');
+          
+          if (response.statusCode == 200) {
+            // Extract cookies
+            final cookies = response.headers['set-cookie'];
+            if (cookies != null) {
+              _cookies = cookies;
+              print('Cookies received: $cookies');
+              
+              // Extract unifises cookie specifically
+              if (cookies.contains('unifises=')) {
+                final unifisesMatch = RegExp(r'unifises=([^;]+)').firstMatch(cookies);
+                if (unifisesMatch != null) {
+                  _unifisesCookie = 'unifises=' + unifisesMatch.group(1)!;
+                  print('✅ Extracted unifises cookie: $_unifisesCookie');
+                }
+              } else {
+                // If no unifises cookie, extract any session cookie that might work
+                final sessionMatch = RegExp(r'(SESSION|JSESSIONID|TOKEN)=([^;]+)').firstMatch(cookies);
+                if (sessionMatch != null) {
+                  _unifisesCookie = sessionMatch.group(0)!;
+                  print('✅ Using session cookie as fallback: $_unifisesCookie');
+                  
+                  // If it's a TOKEN cookie, try to extract CSRF token from JWT
+                  if (sessionMatch.group(1) == 'TOKEN') {
+                    try {
+                      final tokenValue = sessionMatch.group(2)!;
+                      final parts = tokenValue.split('.');
+                      if (parts.length == 3) {
+                        // Decode JWT payload (base64)
+                        final payload = parts[1];
+                        // Add padding if needed
+                        final paddedPayload = payload + '=' * (4 - payload.length % 4);
+                        final decodedBytes = base64Decode(paddedPayload);
+                        final decodedPayload = utf8.decode(decodedBytes);
+                        final payloadJson = jsonDecode(decodedPayload);
+                        
+                        if (payloadJson['csrfToken'] != null) {
+                          _csrfToken = payloadJson['csrfToken'];
+                          print('✅ Extracted CSRF token from JWT: $_csrfToken');
+                        }
+                      }
+                    } catch (e) {
+                      print('Could not extract CSRF token from JWT: $e');
+                    }
+                  }
+                }
               }
               
-              // Check response body for success indicators
-              try {
-                final responseData = jsonDecode(loginResponse.body);
-                if (responseData['meta']?['rc'] == 'ok' || 
-                    responseData['success'] == true ||
-                    responseData['authenticated'] == true) {
-                  _cookies = sessionCookies ?? 'authenticated=true';
-                  print('✅ Local controller authentication successful (JSON response)');
-                  return true;
-                }
-              } catch (e) {
-                // Not JSON, check for success indicators in text
-                if (loginResponse.body.contains('success') || 
-                    loginResponse.body.contains('dashboard') ||
-                    loginResponse.body.contains('authenticated')) {
-                  _cookies = sessionCookies ?? 'authenticated=true';
-                  print('✅ Local controller authentication successful (text response)');
-                  return true;
-                }
-              }
-            } else if (loginResponse.statusCode == 302 || loginResponse.statusCode == 301) {
-              // Redirect might indicate successful login
-              final location = loginResponse.headers['location'];
-              print('Redirect to: $location');
-              
-              if (location != null && !location.contains('login') && !location.contains('error')) {
-                final cookies = loginResponse.headers['set-cookie'];
-                _cookies = cookies ?? sessionCookies ?? 'authenticated=true';
-                print('✅ Local controller authentication successful (redirect)');
+              // If we got a unifises or TOKEN cookie, consider it a successful login
+              if (cookies.contains('unifises=') || cookies.contains('TOKEN=')) {
+                print('✅ Found authentication cookie - login successful');
                 return true;
               }
             }
+
+            try {
+              final responseData = jsonDecode(response.body);
+              print('Login response data: $responseData');
+              
+              // Check for different success indicators
+              if (responseData['meta']?['rc'] == 'ok') {
+                print('✅ Login successful - meta rc ok');
+                return true;
+              } else if (responseData['unique_id'] != null || responseData['username'] != null) {
+                // Your controller returns user info directly
+                print('✅ Login successful - received user info');
+                return true;
+              } else if (responseData['success'] == true || responseData['authenticated'] == true) {
+                print('✅ Login successful - success flag');
+                return true;
+              } else {
+                print('Login failed from $endpoint - API response: ${responseData['meta']}');
+                continue; // Try next endpoint
+              }
+            } catch (e) {
+              print('Error parsing login response from $endpoint: $e');
+              
+              // If we have cookies but can't parse the response, still consider it a success
+              if (cookies != null && (cookies.contains('unifises=') || cookies.contains('TOKEN='))) {
+                print('✅ Login likely successful (have auth cookies but invalid JSON)');
+                return true;
+              }
+              continue; // Try next endpoint
+            }
+          } else if (response.statusCode == 400) {
+            print('Bad request from $endpoint - possibly invalid credentials');
+            try {
+              final responseData = jsonDecode(response.body);
+              print('Error details: $responseData');
+            } catch (e) {
+              print('Could not parse error response: ${response.body}');
+            }
+            continue; // Try next endpoint
+          } else {
+            print('Login failed from $endpoint - HTTP ${response.statusCode}: ${response.body}');
+            continue; // Try next endpoint
           }
         } catch (e) {
-          print('Error trying auth endpoint $authEndpoint: $e');
-          continue;
+          print('Error trying login endpoint $endpoint: $e');
+          continue; // Try next endpoint
         }
       }
       
-      print('❌ All authentication attempts failed');
+      print('❌ All login endpoints failed');
+      
+      return false;
+    } on SocketException catch (e) {
+      print('Network error during login: $e');
+      return false;
+    } on TimeoutException catch (e) {
+      print('Timeout error during login: $e');
+      return false;
+    } on FormatException catch (e) {
+      print('JSON parsing error during login: $e');
+      return false;
+    } on HttpException catch (e) {
+      print('HTTP error during login: $e');
       return false;
     } catch (e) {
-      print('Local controller login error: $e');
+      print('Unexpected login error: $e');
       return false;
     }
   }
@@ -271,6 +236,9 @@ class UnifiService {
     if (_cookies == null) {
       throw Exception('Not authenticated');
     }
+
+    // Use unifises cookie if available, otherwise fall back to all cookies
+    final cookieToUse = _unifisesCookie ?? _cookies!;
 
     try {
       print('Checking for sites or going directly to networks...');
@@ -295,7 +263,7 @@ class UnifiService {
       final response = await _httpClient.get(
         Uri.parse('$baseUrl/api/self/sites'),
         headers: {
-          'Cookie': _cookies!,
+          'Cookie': cookieToUse,
           'User-Agent': 'UnifiPasswordChanger/1.0',
           'Accept': 'application/json',
         },
@@ -359,6 +327,9 @@ class UnifiService {
       throw Exception('Not authenticated');
     }
 
+    // Use unifises cookie if available, otherwise fall back to all cookies
+    final cookieToUse = _unifisesCookie ?? _cookies!;
+
     try {
       print('Fetching wireless networks for site: $siteId');
       
@@ -379,7 +350,7 @@ class UnifiService {
           final response = await _httpClient.get(
             Uri.parse(endpoint),
             headers: {
-              'Cookie': _cookies!,
+              'Cookie': cookieToUse,
               'User-Agent': 'UnifiPasswordChanger/1.0',
               'Accept': 'application/json',
             },
@@ -426,40 +397,113 @@ class UnifiService {
     }
   }
 
+  // Add a method to validate authentication before password update
+  Future<bool> validateAuthentication() async {
+    if (_cookies == null) {
+      print('❌ No cookies available');
+      return false;
+    }
+
+    final cookieToUse = _unifisesCookie ?? _cookies!;
+    print('🔍 Validating authentication with cookie: $cookieToUse');
+
+    // Try multiple validation endpoints
+    final validationEndpoints = [
+      '$baseUrl/api/s/default/stat/health',  // Basic health check
+      '$baseUrl/api/s/default/stat/sysinfo', // System info
+      '$baseUrl/proxy/network/api/s/default/stat/health', // Proxy health check
+      '$baseUrl/api/stat/health',            // Simple health check
+    ];
+
+    for (final endpoint in validationEndpoints) {
+      try {
+        print('🔍 Trying validation endpoint: $endpoint');
+        final response = await _httpClient.get(
+          Uri.parse(endpoint),
+          headers: {
+            'Cookie': cookieToUse,
+            'User-Agent': 'UnifiPasswordChanger/1.0',
+            'Accept': 'application/json',
+          },
+        ).timeout(const Duration(seconds: 10));
+
+        print('Auth validation response from $endpoint: ${response.statusCode}');
+        if (response.statusCode == 200) {
+          print('✅ Authentication is valid');
+          return true;
+        } else if (response.statusCode == 403) {
+          print('❌ Authentication failed - 403 Forbidden');
+          return false;
+        }
+        // Continue to next endpoint for other status codes
+      } catch (e) {
+        print('❌ Authentication validation error for $endpoint: $e');
+        continue;
+      }
+    }
+    
+    print('❌ All validation endpoints failed');
+    return false;
+  }
+
   Future<bool> updateWpaPassword(String siteId, String networkId, String newPassword) async {
     if (_cookies == null) {
       throw Exception('Not authenticated');
     }
 
+    // Skip validation since we have a valid session cookie
+    print('🔍 Proceeding with password update using existing session...');
+
     try {
       print('Updating WPA password for network: $networkId in site: $siteId');
+      print('Available cookies: $_cookies');
+      print('Extracted unifises cookie: $_unifisesCookie');
       
       // First, get the current network configuration to understand the structure
       print('Step 1: Getting current network configuration...');
       Map<String, dynamic>? currentConfig;
+      String? successfulEndpoint;
       
       final getEndpoints = [
-        '$baseUrl/api/s/default/rest/wlanconf/$networkId',
+        '$baseUrl/proxy/network/api/s/$siteId/rest/wlanconf/$networkId',
         '$baseUrl/proxy/network/api/s/default/rest/wlanconf/$networkId',
         '$baseUrl/api/s/$siteId/rest/wlanconf/$networkId',
+        '$baseUrl/api/s/default/rest/wlanconf/$networkId',
       ];
       
       for (final getEndpoint in getEndpoints) {
         try {
+          print('Trying to get config from: $getEndpoint');
+          // Use unifises cookie if available, otherwise fall back to all cookies
+          final cookieToUse = _unifisesCookie ?? _cookies!;
+          
           final getResponse = await _httpClient.get(
             Uri.parse(getEndpoint),
             headers: {
-              'Cookie': _cookies!,
-              'User-Agent': 'UnifiPasswordChanger/1.0',
+              'Cookie': cookieToUse,
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
               'Accept': 'application/json',
             },
           ).timeout(const Duration(seconds: 15));
           
+          print('Config response from $getEndpoint: ${getResponse.statusCode}');
+          
           if (getResponse.statusCode == 200) {
+            print('Config response body: ${getResponse.body}');
             final responseData = jsonDecode(getResponse.body);
             if (responseData['data'] != null && responseData['data'].isNotEmpty) {
               currentConfig = responseData['data'][0];
+              successfulEndpoint = getEndpoint;
               print('✅ Got current network config from $getEndpoint');
+              
+              // Extract unifises cookie if present
+              if (_cookies!.contains('unifises=')) {
+                final unifisesMatch = RegExp(r'unifises=([^;]+)').firstMatch(_cookies!);
+                if (unifisesMatch != null) {
+                  print('✅ Using unifises cookie: ${unifisesMatch.group(1)}');
+                }
+              }
+              
               break;
             }
           }
@@ -469,173 +513,133 @@ class UnifiService {
         }
       }
       
-      // Step 2: Try different update approaches
-      final updateAttempts = <Map<String, dynamic>>[
-        // Method 1: Full config update with current settings
-        if (currentConfig != null) {
-          'method': 'PUT',
-          'endpoint': '$baseUrl/api/s/default/rest/wlanconf/$networkId',
-          'data': {
-            ...currentConfig,
-            'x_passphrase': newPassword,
-          },
-        },
-        
-        // Method 2: Minimal update with just password
-        {
-          'method': 'PUT',
-          'endpoint': '$baseUrl/api/s/default/rest/wlanconf/$networkId',
-          'data': {'x_passphrase': newPassword},
-        },
-        
-        // Method 3: Try with different password field names
-        {
-          'method': 'PUT',
-          'endpoint': '$baseUrl/api/s/default/rest/wlanconf/$networkId',
-          'data': {
-            'x_passphrase': newPassword,
-            'wpa_psk': newPassword,
-            'passphrase': newPassword,
-          },
-        },
-        
-        // Method 4: Try POST instead of PUT
-        {
-          'method': 'POST',
-          'endpoint': '$baseUrl/api/s/default/rest/wlanconf/$networkId',
-          'data': {'x_passphrase': newPassword},
-        },
-        
-        // Method 5: Try with proxy endpoint
-        {
-          'method': 'PUT',
-          'endpoint': '$baseUrl/proxy/network/api/s/default/rest/wlanconf/$networkId',
-          'data': {'x_passphrase': newPassword},
-        },
-        
-        // Method 6: Try alternative API paths
-        {
-          'method': 'PUT',
-          'endpoint': '$baseUrl/api/s/default/upd/wlanconf/$networkId',
-          'data': {'x_passphrase': newPassword},
-        },
-        
-        // Method 7: Try with cmd parameter (some UniFi versions use this)
-        {
-          'method': 'POST',
-          'endpoint': '$baseUrl/api/s/default/cmd/stamgr',
-          'data': {
-            'cmd': 'set-wlan-conf',
-            '_id': networkId,
-            'x_passphrase': newPassword,
-          },
-        },
-        
-        // Method 8: Try form-encoded instead of JSON
-        {
-          'method': 'PUT',
-          'endpoint': '$baseUrl/api/s/default/rest/wlanconf/$networkId',
-          'contentType': 'application/x-www-form-urlencoded',
-          'data': 'x_passphrase=${Uri.encodeComponent(newPassword)}',
-        },
-        
-        // Method 9: Try with CSRF token if we have one
-        if (_csrfToken != null) {
-          'method': 'PUT',
-          'endpoint': '$baseUrl/api/s/default/rest/wlanconf/$networkId',
-          'data': {
-            'x_passphrase': newPassword,
-            'csrf_token': _csrfToken,
-          },
-        },
-      ];
-
-      for (final attempt in updateAttempts) {
-        if (attempt == null) continue;
-        
-        try {
-          print('Trying ${attempt['method']} to ${attempt['endpoint']}');
-          
-          final headers = <String, String>{
-            'Cookie': _cookies!,
-            'Content-Type': attempt['contentType'] as String? ?? 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': baseUrl,
-            'Origin': baseUrl,
-          };
-          
-          String body;
-          if (attempt['contentType'] == 'application/x-www-form-urlencoded') {
-            body = attempt['data'] as String;
-          } else {
-            body = jsonEncode(attempt['data']);
-          }
-          
-          http.Response response;
-          
-          if (attempt['method'] == 'PUT') {
-            response = await _httpClient.put(
-              Uri.parse(attempt['endpoint'] as String),
-              headers: headers,
-              body: body,
-            ).timeout(const Duration(seconds: 30));
-          } else {
-            response = await _httpClient.post(
-              Uri.parse(attempt['endpoint'] as String),
-              headers: headers,
-              body: body,
-            ).timeout(const Duration(seconds: 30));
-          }
-
-          print('Password update response from ${attempt['endpoint']}: ${response.statusCode}');
-          print('Response headers: ${response.headers}');
-          print('Response body: ${response.body}');
-
-          if (response.statusCode == 200) {
-            try {
-              final responseData = jsonDecode(response.body);
-              if (responseData['meta']?['rc'] == 'ok' || 
-                  responseData['success'] == true ||
-                  responseData['data'] != null) {
-                print('✅ Password updated successfully via ${attempt['endpoint']}');
-                return true;
-              } else {
-                print('❌ API returned success status but meta indicates failure: ${responseData['meta']}');
-              }
-            } catch (e) {
-              // Response might not be JSON, check for success indicators
-              if (response.body.contains('success') || 
-                  response.body.contains('ok') ||
-                  response.body.contains('updated')) {
-                print('✅ Password updated successfully (non-JSON response)');
-                return true;
-              }
-            }
-          } else if (response.statusCode == 201 || response.statusCode == 204) {
-            // Some APIs return 201 (Created) or 204 (No Content) for successful updates
-            print('✅ Password updated successfully (${response.statusCode} response)');
-            return true;
-          } else if (response.statusCode == 403) {
-            print('❌ 403 Forbidden - checking if authentication is still valid...');
-            // Try to refresh authentication or check permissions
-            continue;
-          } else {
-            print('❌ Failed with ${response.statusCode}: ${response.body}');
-          }
-        } catch (e) {
-          print('Error trying ${attempt['endpoint']}: $e');
-          continue;
-        }
+      if (currentConfig == null || successfulEndpoint == null) {
+        print('❌ Failed to get current network configuration');
+        return false;
       }
       
-      print('❌ All password update attempts failed');
+      // Step 2: Use the EXACT SAME endpoint that worked for GET
+      print('Step 2: Using the same endpoint that worked for GET: $successfulEndpoint');
+      
+      // Create a minimal update with just the password
+      final updateData = {
+        '_id': networkId,
+        'x_passphrase': newPassword,
+      };
+      
+      print('Sending update with data: $updateData');
+      
+      // Use unifises cookie if available, otherwise fall back to all cookies
+      final cookieToUse = _unifisesCookie ?? _cookies!;
+      print('Using cookie for PUT request: $cookieToUse');
+      
+      try {
+        // Build headers with CSRF token if available
+        final headers = <String, String>{
+          'Cookie': cookieToUse,
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Referer': baseUrl,
+          'Origin': baseUrl,
+        };
+        
+        // Add CSRF token if we have one
+        if (_csrfToken != null) {
+          headers['X-CSRF-Token'] = _csrfToken!;
+          print('✅ Adding CSRF token to request: $_csrfToken');
+        }
+        
+        final updateResponse = await _httpClient.put(
+          Uri.parse(successfulEndpoint),
+          headers: headers,
+          body: jsonEncode(updateData),
+        ).timeout(const Duration(seconds: 30));
+        
+        print('Password update response: ${updateResponse.statusCode}');
+        print('Password update response body: ${updateResponse.body}');
+        
+        if (updateResponse.statusCode == 200) {
+          try {
+            final responseData = jsonDecode(updateResponse.body);
+            if (responseData['meta']?['rc'] == 'ok' || 
+                responseData['success'] == true ||
+                responseData['data'] != null) {
+              print('✅ Password updated successfully!');
+              return true;
+            } else {
+              print('❌ API returned success status but meta indicates failure: ${responseData['meta']}');
+            }
+          } catch (e) {
+            // Response might not be JSON, check for success indicators
+            if (updateResponse.body.contains('success') || 
+                updateResponse.body.contains('ok') ||
+                updateResponse.body.contains('updated')) {
+              print('✅ Password updated successfully (non-JSON response)');
+              return true;
+            }
+          }
+        } else if (updateResponse.statusCode == 201 || updateResponse.statusCode == 204) {
+          // Some APIs return 201 (Created) or 204 (No Content) for successful updates
+          print('✅ Password updated successfully (${updateResponse.statusCode} response)');
+          return true;
+        } else {
+          print('❌ Failed with ${updateResponse.statusCode}: ${updateResponse.body}');
+          
+          // If we still get a 403, try with a full config update
+          if (updateResponse.statusCode == 403 && currentConfig != null) {
+            print('Trying with full config update as fallback...');
+            
+            // Create a full config update
+            final fullUpdateData = {
+              ...currentConfig,
+              'x_passphrase': newPassword,
+            };
+            
+            // Build headers for full update with CSRF token if available
+            final fullHeaders = <String, String>{
+              'Cookie': cookieToUse,
+              'Content-Type': 'application/json',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Accept': 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': baseUrl,
+              'Origin': baseUrl,
+            };
+            
+            // Add CSRF token if we have one
+            if (_csrfToken != null) {
+              fullHeaders['X-CSRF-Token'] = _csrfToken!;
+              print('✅ Adding CSRF token to full update request: $_csrfToken');
+            }
+            
+            final fullUpdateResponse = await _httpClient.put(
+              Uri.parse(successfulEndpoint),
+              headers: fullHeaders,
+              body: jsonEncode(fullUpdateData),
+            ).timeout(const Duration(seconds: 30));
+            
+            print('Full update response: ${fullUpdateResponse.statusCode}');
+            print('Full update response body: ${fullUpdateResponse.body}');
+            
+            if (fullUpdateResponse.statusCode == 200 || 
+                fullUpdateResponse.statusCode == 201 || 
+                fullUpdateResponse.statusCode == 204) {
+              print('✅ Password updated successfully with full config update!');
+              return true;
+            }
+          }
+        }
+      } catch (e) {
+        print('Error updating password: $e');
+      }
+      
+      print('❌ Password update failed');
       print('💡 This might be due to:');
       print('   • Insufficient permissions (need admin access)');
       print('   • Different API version on your controller');
       print('   • Network is managed by a different system');
-      print('   • Controller requires additional authentication');
       
       return false;
     } catch (e) {
