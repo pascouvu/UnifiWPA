@@ -274,10 +274,18 @@ class _PresetupLoginScreenState extends State<PresetupLoginScreen> {
                   child: Column(
                     children: [
                       const Text(
-                        'Developed by',
+                        'Developed by IEC',
                         style: TextStyle(
                           fontSize: 12,
                           color: Colors.grey,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'www.iec.vu',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.blue,
                         ),
                       ),
                       const SizedBox(height: 8),
