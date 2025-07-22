@@ -47,11 +47,6 @@ class _SitesScreenState extends State<SitesScreen> {
     _unifiService.logout();
     Navigator.pushReplacementNamed(context, '/login');
   }
-  
-  void _appLogout() {
-    _unifiService.logout();
-    Navigator.pushReplacementNamed(context, '/app-login');
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -64,12 +59,6 @@ class _SitesScreenState extends State<SitesScreen> {
             icon: const Icon(Icons.logout),
             tooltip: 'Logout from UniFi',
             onPressed: _logout,
-          ),
-          // App logout
-          IconButton(
-            icon: const Icon(Icons.admin_panel_settings),
-            tooltip: 'App Admin Logout',
-            onPressed: _appLogout,
           ),
         ],
       ),

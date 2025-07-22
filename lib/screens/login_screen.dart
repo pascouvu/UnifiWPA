@@ -4,7 +4,6 @@ import '../services/unifi_service.dart';
 import '../services/storage_service.dart';
 import 'debug_screen.dart';
 import 'certificate_helper_screen.dart';
-import '../secret.dart';
 import '../widgets/network_scanner_widget.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -45,27 +44,16 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
     
-    // If no presetup info, try to load from secret.dart
-    try {
-      _usernameController.text = UnifiCredentials.username;
-      _passwordController.text = UnifiCredentials.password;
-      _ipController.text = UnifiCredentials.defaultIp;
-      _portController.text = UnifiCredentials.defaultPort;
-      _useHttps = UnifiCredentials.useHttps;
-      
-      print('Loaded credentials from secret.dart');
-    } catch (e) {
-      // If secret.dart doesn't exist or has missing fields, use defaults
-      if (_ipController.text.isEmpty) {
-        _ipController.text = '192.168.1.';
-      }
-      if (_portController.text.isEmpty) {
-        _portController.text = '443';
-      }
-      
-      // Then try to load from saved preferences
-      await _loadSavedCredentials();
+    // Set default values
+    if (_ipController.text.isEmpty) {
+      _ipController.text = '192.168.1.';
     }
+    if (_portController.text.isEmpty) {
+      _portController.text = '443';
+    }
+    
+    // Try to load from saved preferences
+    await _loadSavedCredentials();
   }
 
   Future<void> _loadSavedCredentials() async {
@@ -73,7 +61,6 @@ class _LoginScreenState extends State<LoginScreen> {
     if (remember) {
       final credentials = await StorageService.getCredentials();
       setState(() {
-        // Only override if not already set from secret.dart
         if (_usernameController.text.isEmpty) {
           _usernameController.text = credentials['username'] ?? '';
         }
@@ -243,16 +230,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'Unifi WPA',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  'WiFi Password Manager',
+                  'UniFi SSID WPA Password Updater',
                   style: TextStyle(
                     fontSize: 14,
                     color: Colors.grey,
